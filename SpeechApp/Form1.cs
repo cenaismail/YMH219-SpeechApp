@@ -1,3 +1,4 @@
+using System.Speech.Recognition;
 using System.Speech.Synthesis;
 
 namespace SpeechApp
@@ -6,14 +7,24 @@ namespace SpeechApp
     {
         private TextToSpeechService? _tts;
         private List<VoiceInfo> _voices = new List<VoiceInfo>();
+
         // Hız çubuğu sürüklenirken her adımda değil, bırakıldıktan kısa süre sonra uygulamak için
         private readonly System.Windows.Forms.Timer _rateTimer = new System.Windows.Forms.Timer { Interval = 300 };
+
+        private SpeechToTextService? _stt;
+        private List<RecognizerInfo> _recognizers = new List<RecognizerInfo>();
+
         public Form1()
         {
             InitializeComponent();
             InitTextToSpeech();
+            InitSpeechToText();
 
-            FormClosing += (s, e) => _tts?.Dispose();
+            FormClosing += (s, e) =>
+            {
+                _tts?.Dispose();
+                _stt?.Dispose();
+            };
         }
 
         // =====================================================================
@@ -28,7 +39,7 @@ namespace SpeechApp
             btnStopSpeak.Click += (s, e) => _tts?.Stop();
             btnClearTts.Click += BtnClearTts_Click;
             trkRate.ValueChanged += TrkRate_ValueChanged;
-            _rateTimer.Tick += RateTimer_Tick; 
+            _rateTimer.Tick += RateTimer_Tick;
             cmbVoices.SelectedIndexChanged += CmbVoices_SelectedIndexChanged;
 
             try
@@ -131,6 +142,117 @@ namespace SpeechApp
             bool busy = state != SynthesizerState.Ready;
             btnPause.Enabled = busy;
             btnStopSpeak.Enabled = busy;
+        }
+
+        // =====================================================================
+        // SPEECH-TO-TEXT (Konuşmayı yazıya çevirme)
+        // =====================================================================
+
+        private void InitSpeechToText()
+        {
+            btnListen.Click += BtnListen_Click;
+            btnStopListen.Click += BtnStopListen_Click;
+            btnClearStt.Click += (s, e) => lstRecognized.Items.Clear();
+
+            // Yüklü konuşma tanıma motorlarını (dilleri) listele
+            _recognizers = SpeechToTextService.GetRecognizers();
+            foreach (RecognizerInfo r in _recognizers)
+                cmbRecognizers.Items.Add($"{r.Culture.DisplayName} ({r.Culture.Name})");
+
+            if (_recognizers.Count > 0)
+            {
+                // Türkçe motor varsa onu seç, yoksa ilkini
+                int turkish = _recognizers.FindIndex(r => r.Culture.Name.StartsWith("tr"));
+                cmbRecognizers.SelectedIndex = turkish >= 0 ? turkish : 0;
+            }
+
+            _stt = new SpeechToTextService();
+            _stt.TextRecognized += (text, confidence) => RunOnUi(() => AddRecognizedText(text, confidence));
+            _stt.ListeningStopped += error => RunOnUi(() => OnListeningStopped(error));
+
+            UpdateSttUi();
+        }
+
+        private void BtnListen_Click(object? sender, EventArgs e)
+        {
+            if (_stt == null) return;
+
+            if (_recognizers.Count == 0)
+            {
+                MessageBox.Show("Bu bilgisayarda konuşma tanıma motoru bulunamadı.\n\n" +
+                                "Windows'a İngilizce (ABD) dil ve konuşma paketi eklemek gerekebilir.",
+                    "Speech-to-Text", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                _stt.Start(_recognizers[cmbRecognizers.SelectedIndex]);
+            }
+            catch (InvalidOperationException ex)
+            {
+                MessageBox.Show("Mikrofona erişilemedi. Mikrofonun bağlı olduğundan ve Windows gizlilik " +
+                                "ayarlarında uygulamaların mikrofonu kullanmasına izin verildiğinden emin olun.\n\n" + ex.Message,
+                    "Mikrofon hatası", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Dinleme başlatılamadı:\n" + ex.Message, "Hata",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+
+            UpdateSttUi();
+        }
+
+        private void BtnStopListen_Click(object? sender, EventArgs e)
+        {
+            _stt?.Stop();
+            lblSttStatus.Text = "Durduruluyor...";
+            lblSttStatus.ForeColor = Color.DarkOrange;
+            btnStopListen.Enabled = false;
+        }
+
+        /// <summary>Tanınan cümleyi saat ve güven oranıyla listeye ekler.</summary>
+        private void AddRecognizedText(string text, float confidence)
+        {
+            lstRecognized.Items.Add($"[{DateTime.Now:HH:mm:ss}] {text}   (güven: %{confidence * 100:0})");
+            lstRecognized.TopIndex = lstRecognized.Items.Count - 1;   // en yeni satıra kaydır
+        }
+
+        private void OnListeningStopped(string? error)
+        {
+            if (error != null)
+            {
+                MessageBox.Show("Dinleme bir hata nedeniyle durdu:\n" + error, "Speech-to-Text",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            UpdateSttUi();
+        }
+
+        /// <summary>Durum yazısını ve butonları dinleme durumuna göre ayarlar.</summary>
+        private void UpdateSttUi()
+        {
+            bool listening = _stt?.IsListening == true;
+
+            btnListen.Enabled = !listening;
+            btnStopListen.Enabled = listening;
+            cmbRecognizers.Enabled = !listening && _recognizers.Count > 0;
+
+            if (listening)
+            {
+                lblSttStatus.Text = "● Dinleniyor... konuşabilirsiniz";
+                lblSttStatus.ForeColor = Color.Red;
+            }
+            else if (_recognizers.Count == 0)
+            {
+                lblSttStatus.Text = "Konuşma tanıma motoru bulunamadı";
+                lblSttStatus.ForeColor = Color.Gray;
+            }
+            else
+            {
+                lblSttStatus.Text = "Dinleme kapalı";
+                lblSttStatus.ForeColor = Color.Gray;
+            }
         }
 
         // =====================================================================
